@@ -1,0 +1,246 @@
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MissileConfig = require(ReplicatedStorage.GuidedMissile.Modules.MissileConfig)
+
+local Players = game:GetService("Players")
+
+local function applyExplosionDamage(center)
+    local radius = MissileConfig.ExplosionRadius
+    local maxDamage = MissileConfig.ExplosionDamage
+    local damaged = {}
+
+    -- Joueurs
+    for _, player in ipairs(Players:GetPlayers()) do
+        local character = player.Character
+        if character then
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            local rootPart = character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
+            if humanoid and rootPart and not damaged[humanoid] then
+                local distance = (rootPart.Position - center).Magnitude
+                if distance <= radius then
+                    local damage = maxDamage * (1 - distance / radius)
+                    damaged[humanoid] = true
+                    humanoid:TakeDamage(damage)
+                end
+            end
+        end
+    end
+
+    -- PNJ (modèles avec Humanoid qui ne sont pas des joueurs)
+    for _, model in ipairs(workspace:GetDescendants()) do
+        if model:IsA("Model") then
+            local humanoid = model:FindFirstChildOfClass("Humanoid")
+            local rootPart = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+            if humanoid and rootPart and not damaged[humanoid] then
+                local player = Players:GetPlayerFromCharacter(model)
+                if not player then
+                    local distance = (rootPart.Position - center).Magnitude
+                    if distance <= radius then
+                        local damage = maxDamage * (1 - distance / radius)
+                        damaged[humanoid] = true
+                        humanoid:TakeDamage(damage)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local MissileController = {}
+MissileController.ActiveMissiles = {}
+
+function MissileController.LaunchMissile(player, aimDirection)
+    local character = player.Character
+    if not character then return end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+
+    -- Valider la direction de visée envoyée par le client
+    local forward
+    if typeof(aimDirection) == "Vector3" and aimDirection.Magnitude > 0.01 then
+        forward = aimDirection.Unit
+    else
+        forward = rootPart.CFrame.LookVector
+    end
+
+    local spawnPos = rootPart.Position + forward * 5 + Vector3.new(0, 1, 0)
+
+    local missileModel = ReplicatedStorage.GuidedMissile:FindFirstChild("MissileModel")
+    local missile
+    local missileParentModel = nil
+    if missileModel then
+        local clonedModel = missileModel:Clone()
+        clonedModel.Name = "Missile"
+        clonedModel.PrimaryPart.CFrame = CFrame.lookAt(spawnPos, spawnPos + forward)
+        clonedModel.Parent = game.Workspace.Missiles
+        missile = clonedModel.PrimaryPart
+        missileParentModel = clonedModel
+    else
+        missile = Instance.new("Part")
+        missile.Name = "Missile"
+        missile.Size = Vector3.new(1, 1, 3)
+        missile.Shape = Enum.PartType.Cylinder
+        missile.Material = Enum.Material.Metal
+        missile.Color = Color3.new(1, 0, 0)
+        missile.Anchored = false
+        missile.CanCollide = false
+        missile.CFrame = CFrame.lookAt(spawnPos, spawnPos + forward)
+        missile.Parent = game.Workspace.Missiles
+    end
+
+    -- Annuler la gravité pour que le missile suive exactement la direction donnée
+    local antiGravity = Instance.new("BodyVelocity")
+    antiGravity.Name = "AntiGravity"
+    antiGravity.MaxForce = Vector3.new(0, 1e6, 0)
+    antiGravity.Velocity = Vector3.new(0, 0, 0)
+    antiGravity.Parent = missile
+
+    missile:SetAttribute("Owner", player.UserId)
+    missile.Anchored = false
+
+    -- Activer les collisions pour détecter le contact avec le sol
+    -- On n'active pas la collision sur le PrimaryPart (Body) pour éviter les faux contacts
+    if missileParentModel then
+        for _, part in ipairs(missileParentModel:GetDescendants()) do
+            if part:IsA("BasePart") and part ~= missile then
+                part.CanCollide = true
+            end
+        end
+        missile.CanCollide = false
+    else
+        missile.CanCollide = true
+    end
+
+    local launchTime = tick()
+    local entry = {
+        missile = missile,
+        model = missileParentModel,
+        owner = player,
+        forward = forward,
+        desiredDirection = forward,
+        currentTurnRate = 0,
+        hasExploded = false,
+        launchTime = launchTime,
+    }
+    table.insert(MissileController.ActiveMissiles, entry)
+
+    -- Détection du contact avec le sol sur toutes les pièces du modèle
+    local function onTouched(hit)
+        if entry.hasExploded then return end
+
+        -- Ignorer les contacts avec le missile lui-même ou avec le personnage du joueur
+        if hit and (hit:IsDescendantOf(missileParentModel or missile)) then return end
+        if character and hit and hit:IsDescendantOf(character) then return end
+
+        -- Armer l'explosion seulement après 0.5 seconde pour éviter les contacts au lancement
+        if tick() - entry.launchTime < 0.5 then return end
+
+        entry.hasExploded = true
+
+        -- Arrêter le missile
+        missile.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        local antiGravity = missile:FindFirstChild("AntiGravity")
+        if antiGravity then
+            antiGravity.Velocity = Vector3.new(0, 0, 0)
+        end
+
+        -- Créer l'explosion visuelle sans dégâts intrinsèques
+        local explosion = Instance.new("Explosion")
+        explosion.Position = missile.Position
+        explosion.BlastPressure = 0
+        explosion.BlastRadius = 0
+        explosion.DestroyJointRadiusPercent = 0
+        explosion.Parent = workspace
+
+        -- Appliquer les dégâts personnalisés
+        applyExplosionDamage(missile.Position)
+
+        -- Détruire le missile
+        if missileParentModel then
+            missileParentModel:Destroy()
+        else
+            missile:Destroy()
+        end
+    end
+
+    if missileParentModel then
+        for _, part in ipairs(missileParentModel:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.Touched:Connect(onTouched)
+            end
+        end
+    else
+        missile.Touched:Connect(onTouched)
+    end
+
+    missile.AssemblyLinearVelocity = forward * MissileConfig.MissileSpeed
+    if antiGravity then
+        antiGravity.Velocity = forward * MissileConfig.MissileSpeed
+    end
+
+    task.delay(MissileConfig.MaxLifetime, function()
+        if missileParentModel then
+            missileParentModel:Destroy()
+        elseif missile and missile.Parent then
+            missile:Destroy()
+        end
+    end)
+end
+
+function MissileController.SetControlDirection(player, direction)
+    if typeof(direction) ~= "Vector3" then return end
+    direction = direction.Unit
+
+    for _, entry in ipairs(MissileController.ActiveMissiles) do
+        if entry.owner == player then
+            entry.desiredDirection = direction
+        end
+    end
+end
+
+RunService.Heartbeat:Connect(function(dt)
+    for i = #MissileController.ActiveMissiles, 1, -1 do
+        local entry = MissileController.ActiveMissiles[i]
+        local missile = entry.missile
+        local model = entry.model
+        if not missile or not missile.Parent or (model and not model.Parent) then
+            if model and model.Parent then
+                model:Destroy()
+            end
+            table.remove(MissileController.ActiveMissiles, i)
+            continue
+        end
+
+        local currentForward = missile.CFrame.LookVector
+        local desired = entry.desiredDirection
+
+        local angle = math.acos(math.clamp(currentForward:Dot(desired), -1, 1))
+        local maxTurnRate = math.rad(MissileConfig.MaxTurnRate or 70)
+        local rotationSmoothness = MissileConfig.RotationSmoothness or 12
+        local turnSpeed = MissileConfig.TurnSpeed or 2
+
+        local targetTurnRate = math.min(angle / math.max(dt, 0.016), maxTurnRate)
+        local turnRate = entry.currentTurnRate + (targetTurnRate - entry.currentTurnRate) * math.min(1, rotationSmoothness * dt)
+        entry.currentTurnRate = turnRate
+
+        local turnAngle = math.min(angle, turnRate * dt)
+
+        if turnAngle > 0.0001 then
+            local axis = currentForward:Cross(desired)
+            if axis.Magnitude > 0.0001 then
+                axis = axis.Unit
+                local newForward = CFrame.fromAxisAngle(axis, turnAngle) * currentForward
+                newForward = newForward.Unit
+                missile.CFrame = CFrame.lookAt(missile.Position, missile.Position + newForward)
+            end
+        end
+
+        missile.AssemblyLinearVelocity = missile.CFrame.LookVector * MissileConfig.MissileSpeed
+        local antiGravity = missile:FindFirstChild("AntiGravity")
+        if antiGravity then
+            antiGravity.Velocity = missile.CFrame.LookVector * MissileConfig.MissileSpeed
+        end
+    end
+end)
+
+return MissileController
