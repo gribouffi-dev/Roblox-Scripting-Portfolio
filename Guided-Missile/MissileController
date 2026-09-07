@@ -9,7 +9,6 @@ local function applyExplosionDamage(center)
     local maxDamage = MissileConfig.ExplosionDamage
     local damaged = {}
 
-    -- Joueurs
     for _, player in ipairs(Players:GetPlayers()) do
         local character = player.Character
         if character then
@@ -26,7 +25,6 @@ local function applyExplosionDamage(center)
         end
     end
 
-    -- PNJ (modèles avec Humanoid qui ne sont pas des joueurs)
     for _, model in ipairs(workspace:GetDescendants()) do
         if model:IsA("Model") then
             local humanoid = model:FindFirstChildOfClass("Humanoid")
@@ -55,7 +53,6 @@ function MissileController.LaunchMissile(player, aimDirection)
     local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not rootPart then return end
 
-    -- Valider la direction de visée envoyée par le client
     local forward
     if typeof(aimDirection) == "Vector3" and aimDirection.Magnitude > 0.01 then
         forward = aimDirection.Unit
@@ -98,8 +95,6 @@ function MissileController.LaunchMissile(player, aimDirection)
     missile:SetAttribute("Owner", player.UserId)
     missile.Anchored = false
 
-    -- Activer les collisions pour détecter le contact avec le sol
-    -- On n'active pas la collision sur le PrimaryPart (Body) pour éviter les faux contacts
     if missileParentModel then
         for _, part in ipairs(missileParentModel:GetDescendants()) do
             if part:IsA("BasePart") and part ~= missile then
@@ -124,27 +119,22 @@ function MissileController.LaunchMissile(player, aimDirection)
     }
     table.insert(MissileController.ActiveMissiles, entry)
 
-    -- Détection du contact avec le sol sur toutes les pièces du modèle
     local function onTouched(hit)
         if entry.hasExploded then return end
 
-        -- Ignorer les contacts avec le missile lui-même ou avec le personnage du joueur
         if hit and (hit:IsDescendantOf(missileParentModel or missile)) then return end
         if character and hit and hit:IsDescendantOf(character) then return end
 
-        -- Armer l'explosion seulement après 0.5 seconde pour éviter les contacts au lancement
         if tick() - entry.launchTime < 0.5 then return end
 
         entry.hasExploded = true
 
-        -- Arrêter le missile
         missile.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         local antiGravity = missile:FindFirstChild("AntiGravity")
         if antiGravity then
             antiGravity.Velocity = Vector3.new(0, 0, 0)
         end
 
-        -- Créer l'explosion visuelle sans dégâts intrinsèques
         local explosion = Instance.new("Explosion")
         explosion.Position = missile.Position
         explosion.BlastPressure = 0
@@ -152,10 +142,8 @@ function MissileController.LaunchMissile(player, aimDirection)
         explosion.DestroyJointRadiusPercent = 0
         explosion.Parent = workspace
 
-        -- Appliquer les dégâts personnalisés
         applyExplosionDamage(missile.Position)
 
-        -- Détruire le missile
         if missileParentModel then
             missileParentModel:Destroy()
         else
