@@ -1,0 +1,11 @@
+return {
+    MissileSpeed = 45,
+    TurnSpeed = 2,
+    ControlSensitivity = 0.7,
+    RotationSmoothness = 8,
+    MaxTurnRate = 70,
+    MaxLifetime = 10,
+    ControlDistance = 500,
+    ExplosionRadius = 20,
+    ExplosionDamage = 100,
+}
