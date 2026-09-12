@@ -1,3 +1,5 @@
+-- Discord: qan.008 | Roblox: GribouFFi
+-- Services used for player data, frame updates, input and shared objects.
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -6,6 +8,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local tool = script.Parent
 
+-- These references are kept so the flight objects can be reused and cleaned up correctly.
 local bodyVelocity = nil
 local bodyGyro = nil
 local character = nil
@@ -17,6 +20,7 @@ local takeoffStartTime = nil
 local TAKEOFF_DELAY = 2.33
 local poseRenderStepName = "BalaiFlightPose"
 
+-- Flight settings are kept here so movement can be changed without touching the main logic.
 local FLY_SPEED = 60
 local UP_SPEED = 60
 local ACCELERATION = 3
@@ -43,6 +47,7 @@ local balaiFlightToggle = ReplicatedStorage:WaitForChild("BalaiFlightToggle")
 local BROOM_OFFSET_POS = Vector3.new(0, -1.5, 0) 
 local BROOM_OFFSET_ROT = Vector3.new(-90, 0, 0)
 
+-- Save the original Motor6D values first, because the flight pose changes them while flying.
 local function storeOriginalPose()
 	if not character then return end
 	rightShoulderMotor = character:FindFirstChild("RightShoulder")
@@ -55,6 +60,7 @@ local function storeOriginalPose()
 	end
 end
 
+-- The pose is applied directly to the character joints so it stays stable during flight.
 local function forceFlightPose()
 	if not character then return end
 	if not rightShoulderMotor then
@@ -71,6 +77,7 @@ local function forceFlightPose()
 	end
 end
 
+-- Restoring the saved C0 values avoids leaving the character in the flight pose after dismount.
 local function restorePose()
 	if rightShoulderMotor and originalRightShoulderC0 then
 		rightShoulderMotor.C0 = originalRightShoulderC0
@@ -84,6 +91,7 @@ local function restorePose()
 	originalRightElbowC0 = nil
 end
 
+-- Collision is checked from the current velocity instead of moving the player blindly through walls.
 local function applyCollision(velocity, dt)
 	if not ENABLE_COLLISION or not rootPart or not character then return velocity end
 	local speed = velocity.Magnitude
@@ -91,6 +99,7 @@ local function applyCollision(velocity, dt)
 	local origin = rootPart.Position
 	local direction = velocity / speed
 	local maxDistance = BODY_COLLISION_RADIUS + COLLISION_SKIN + math.min(speed * dt, 2)
+	-- The character is excluded because the ray starts from the player's own root part.
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterDescendantsInstances = {character}
 	raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
@@ -105,6 +114,7 @@ local function applyCollision(velocity, dt)
 	return velocity
 end
 
+-- Roblox can start the default Tool animation, so it is stopped before the custom broom animations.
 local function stopDefaultToolAnim()
 	if not character or not humanoid then return end
 	local animator = humanoid:FindFirstChildOfClass("Animator")
@@ -116,6 +126,7 @@ local function stopDefaultToolAnim()
 		end
 	end
 end
+-- Idle and walk tracks are switched from MoveDirection so the held broom still feels like a normal tool.
 local function updateIdleAnimation()
 	if not character or not humanoid or flying then return end
 	if tool.Parent ~= character then return end
@@ -152,6 +163,7 @@ local function updateIdleAnimation()
 	end
 end
 
+-- Flight takes control of the Humanoid and creates temporary physics objects for movement.
 local function startFlying()
 	if idleTrack then
 		idleTrack:Stop()
@@ -162,6 +174,7 @@ local function startFlying()
 		walkTrack = nil
 	end
 	if not character or not humanoid or not rootPart then return end
+	-- From this point the Heartbeat loop is responsible for the character movement.
 	flying = true
 	takeoffStartTime = time()
 	defaultWalkSpeed = humanoid.WalkSpeed
@@ -175,6 +188,7 @@ local function startFlying()
 	humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
 	storeOriginalPose()
 	
+	-- The server is informed about the flight state so other players can sync the broom state.
 	balaiFlightToggle:FireServer(true)
 
 	local rightShoulder = character:FindFirstChild("RightShoulder")
@@ -201,6 +215,7 @@ local function startFlying()
 		animator.Parent = humanoid
 	end
 
+	-- Animations are loaded through the player's Animator instead of manually changing animation states.
 	local mountAnimation = Instance.new("Animation")
 	mountAnimation.AnimationId = "rbxassetid://86414541806173"
 	mountTrack = animator:LoadAnimation(mountAnimation)
@@ -215,16 +230,19 @@ local function startFlying()
 		flyTrack:Play()
 	end)
 
+	-- BodyVelocity handles the actual movement while the target velocity is calculated below.
 	bodyVelocity = Instance.new("BodyVelocity")
 	bodyVelocity.MaxForce = Vector3.new(40000, 40000, 40000)
 	bodyVelocity.Velocity = Vector3.zero
 	bodyVelocity.Parent = rootPart
 
+	-- BodyGyro keeps the character facing the same direction as the camera during flight.
 	bodyGyro = Instance.new("BodyGyro")
 	bodyGyro.MaxTorque = Vector3.new(40000, 40000, 40000)
 	bodyGyro.CFrame = rootPart.CFrame
 	bodyGyro.Parent = rootPart
 
+	-- A small invisible box gives the flying character an extra physical collision volume.
 	flightCollisionBox = Instance.new("Part")
 	flightCollisionBox.Name = "FlightCollisionBox"
 	flightCollisionBox.Size = Vector3.new(2.5, 5, 2.5)
@@ -247,6 +265,7 @@ local function startFlying()
 		stopDefaultToolAnim()
 	end)
 
+	-- Heartbeat is used here because movement needs to update every frame with the real delta time.
 	heartbeatConnection = RunService.Heartbeat:Connect(function(dt)
 		if not flying or not bodyVelocity or not bodyGyro or not humanoid or not rootPart then return end
 		if takeoffStartTime and (time() - takeoffStartTime) < TAKEOFF_DELAY then
@@ -274,6 +293,7 @@ local function startFlying()
 			leftElbow.C0 = CFrame.new(0, -1, 0)
 		end
 
+		-- Camera vectors make flight controls follow the direction the player is looking at.
 		local forward = camera.CFrame.LookVector
 		local right = camera.CFrame.RightVector
 
@@ -281,6 +301,7 @@ local function startFlying()
 			bodyGyro.CFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + forward.Unit)
 		end
 
+		-- Keyboard input is converted into a local direction before being combined with the camera vectors.
 		local input = Vector3.zero
 		if UserInputService:IsKeyDown(Enum.KeyCode.W) then input = input + Vector3.new(0, 0, 1) end
 		if UserInputService:IsKeyDown(Enum.KeyCode.S) then input = input + Vector3.new(0, 0, -1) end
@@ -305,6 +326,7 @@ local function startFlying()
 			targetVelocity = targetVelocity + Vector3.new(0, -UP_SPEED, 0)
 		end
 
+		-- Lerp gives acceleration and deceleration instead of an instant change in speed.
 		local rate = if targetVelocity.Magnitude > currentVelocity.Magnitude then ACCELERATION else DECELERATION
 		currentVelocity = currentVelocity:Lerp(targetVelocity, math.min(1, rate * dt))
 		currentVelocity = applyCollision(currentVelocity, dt)
@@ -312,6 +334,7 @@ local function startFlying()
 	end)
 end
 
+-- All temporary flight objects and connections are removed here to prevent duplicated physics or events.
 local function stopFlying()
 	local wasFlying = flying
 	flying = false
@@ -380,6 +403,7 @@ local function stopFlying()
 	end
 end
 
+-- This connection only updates the normal held-tool animations while the player is not flying.
 local idleConnection = nil
 
 local function startIdleConnection()
@@ -393,6 +417,7 @@ local function startIdleConnection()
 	end)
 end
 
+-- Character references are refreshed after respawn because the old Humanoid and root part no longer exist.
 local function onCharacterAdded(char)
 	character = char
 	humanoid = char:WaitForChild("Humanoid", 5)
@@ -412,11 +437,13 @@ local function onCharacterAdded(char)
 	end
 end
 
+-- Equipping starts the normal broom animation system.
 tool.Equipped:Connect(function()
 	startIdleConnection()
 	updateIdleAnimation()
 end)
 
+-- Unequipping always stops flight first, so the player cannot keep flying with an inactive Tool.
 tool.Unequipped:Connect(function()
 	stopFlying()
 	if idleTrack then
@@ -429,6 +456,7 @@ tool.Unequipped:Connect(function()
 	end
 end)
 
+-- Mobile uses a GUI event, while keyboard movement is handled directly by UserInputService.
 local function listenToFlyButton()
 	local gui = player:WaitForChild("PlayerGui", 10)
 	if not gui then return end
